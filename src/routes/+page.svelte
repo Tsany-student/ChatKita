@@ -15,7 +15,7 @@
       const nomor = generateNumber();
 
       const { data, error } = await supabase
-        .from("users")
+        .from("profiles")
         .select("nomor")
         .eq("nomor", nomor)
         .maybeSingle();
@@ -35,7 +35,9 @@
   async function masuk() {
     errorMessage = "";
 
-    if (!username.trim()) {
+    const usernameBersih = username.trim();
+
+    if (!usernameBersih) {
       errorMessage = "Username wajib diisi.";
       return;
     }
@@ -43,24 +45,42 @@
     loading = true;
 
     try {
-      let nomorUser = localStorage.getItem("nomorUser");
+      const { data: userLama, error: errorCari } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("username", usernameBersih)
+        .maybeSingle();
 
-      if (!nomorUser) {
-        nomorUser = await buatNomorUnik();
-
-        const { error } = await supabase
-          .from("users")
-          .insert({
-            username: username.trim(),
-            nomor: nomorUser
-          });
-
-        if (error) {
-          throw error;
-        }
+      if (errorCari) {
+        throw errorCari;
       }
 
-      localStorage.setItem("username", username.trim());
+      let nomorUser;
+
+      if (userLama) {
+        nomorUser = userLama.nomor;
+      } else {
+        nomorUser = await buatNomorUnik();
+
+        const { data: profileBaru, error: errorInsert } = await supabase
+          .from("profiles")
+          .insert({
+            id: crypto.randomUUID(),
+            username: usernameBersih,
+            display_name: usernameBersih,
+            nomor: nomorUser
+          })
+          .select()
+          .single();
+
+        if (errorInsert) {
+          throw errorInsert;
+        }
+
+        nomorUser = profileBaru.nomor;
+      }
+
+      localStorage.setItem("username", usernameBersih);
       localStorage.setItem("nomorUser", nomorUser);
 
       await goto("/chat");

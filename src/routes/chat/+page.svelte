@@ -2,13 +2,38 @@
   import { onMount } from "svelte";
   import { supabase } from "$lib/supabase";
 
+  /**
+   * @typedef {{
+   *   id: string,
+   *   username: string,
+   *   display_name: string | null,
+   *   avatar_url: string | null,
+   *   bio: string | null,
+   *   created_at: string,
+   *   nomor: string
+   * }} Profile
+   *
+   * @typedef {{
+   *   id: string,
+   *   sender_nomor: string,
+   *   receiver_nomor: string,
+   *   message: string,
+   *   created_at: string
+   * }} Message
+   */
+
   let username = $state("");
   let nomorUser = $state("");
   let nomorCari = $state("");
   let pesan = $state("");
 
+  /** @type {Profile | null} */
   let selectedUser = $state(null);
+
+  /** @type {Profile[]} */
   let chats = $state([]);
+
+  /** @type {Message[]} */
   let messages = $state([]);
 
   let loadingUser = $state(true);
@@ -16,57 +41,71 @@
   let sending = $state(false);
   let errorMessage = $state("");
 
-  onMount(async () => {
-    username = localStorage.getItem("username") || "";
-    nomorUser = localStorage.getItem("nomorUser") || "";
+  onMount(() => {
+    /** @type {any} */
+    let channel = null;
 
-    loadingUser = false;
+    async function mulai() {
+      username = localStorage.getItem("username") || "";
+      nomorUser = localStorage.getItem("nomorUser") || "";
 
-    loadChats();
+      loadingUser = false;
 
-    const channel = supabase
-      .channel("messages-realtime")
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "messages"
-        },
-        (payload) => {
-          const message = payload.new;
+      await loadChats();
 
-          const berhubunganDenganSaya =
-            message.sender_nomor === nomorUser ||
-            message.receiver_nomor === nomorUser;
+      channel = supabase
+        .channel("messages-realtime")
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "messages"
+          },
+          (payload) => {
+            /** @type {Message} */
+            const message = /** @type {Message} */ (payload.new);
 
-          if (!berhubunganDenganSaya) return;
+            const berhubunganDenganSaya =
+              message.sender_nomor === nomorUser ||
+              message.receiver_nomor === nomorUser;
 
-          if (
-            selectedUser &&
-            (
-              (message.sender_nomor === nomorUser &&
-                message.receiver_nomor === selectedUser.nomor) ||
-              (message.sender_nomor === selectedUser.nomor &&
-                message.receiver_nomor === nomorUser)
-            )
-          ) {
-            const sudahAda = messages.some(
-              (item) => item.id === message.id
-            );
+            if (!berhubunganDenganSaya) return;
 
-            if (!sudahAda) {
-              messages = [...messages, message];
+            if (
+              selectedUser &&
+              (
+                (
+                  message.sender_nomor === nomorUser &&
+                  message.receiver_nomor === selectedUser.nomor
+                ) ||
+                (
+                  message.sender_nomor === selectedUser.nomor &&
+                  message.receiver_nomor === nomorUser
+                )
+              )
+            ) {
+              const sudahAda = messages.some(
+                (item) => item.id === message.id
+              );
+
+              if (!sudahAda) {
+                messages = [...messages, message];
+              }
             }
-          }
 
-          loadChats();
-        }
-      )
-      .subscribe();
+            loadChats();
+          }
+        )
+        .subscribe();
+    }
+
+    mulai();
 
     return () => {
-      supabase.removeChannel(channel);
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
     };
   });
 
@@ -81,7 +120,10 @@
       )
       .order("created_at", { ascending: false });
 
-    if (error || !data) return;
+    if (error || !data) {
+      console.error("ERROR LOAD CHATS:", error);
+      return;
+    }
 
     const nomorSudahAda = new Set();
 
@@ -101,11 +143,17 @@
       return;
     }
 
-    const { data: users } = await supabase
-      .from("users")
+    const { data: users, error: errorUsers } = await supabase
+      .from("profiles")
       .select("*")
       .in("nomor", nomorArray);
 
+    if (errorUsers) {
+      console.error("ERROR LOAD USERS:", errorUsers);
+      return;
+    }
+
+    /** @type {Profile[]} */
     chats = users || [];
   }
 
@@ -128,7 +176,7 @@
 
     try {
       const { data, error } = await supabase
-        .from("users")
+        .from("profiles")
         .select("*")
         .eq("nomor", nomor)
         .maybeSingle();
@@ -140,21 +188,24 @@
         return;
       }
 
-      selectedUser = data;
+      /** @type {Profile} */
+      const user = data;
+
+      selectedUser = user;
 
       const sudahAda = chats.some(
-        (chat) => chat.nomor === data.nomor
+        (chat) => chat.nomor === user.nomor
       );
 
       if (!sudahAda) {
-        chats = [data, ...chats];
+        chats = [user, ...chats];
       }
 
       nomorCari = "";
 
-      await loadMessages(data.nomor);
+      await loadMessages(user.nomor);
     } catch (error) {
-      console.error(error);
+      console.error("ERROR CARI USER:", error);
 
       errorMessage =
         error instanceof Error
@@ -165,12 +216,19 @@
     }
   }
 
+  /**
+   * @param {Profile} chat
+   */
   async function pilihChat(chat) {
     selectedUser = chat;
+    errorMessage = "";
 
     await loadMessages(chat.nomor);
   }
 
+  /**
+   * @param {string} nomorTeman
+   */
   async function loadMessages(nomorTeman) {
     if (!nomorUser || !nomorTeman) return;
 
@@ -184,18 +242,20 @@
 
     if (error) {
       console.error("ERROR LOAD MESSAGE:", error);
+      errorMessage = error.message;
       return;
     }
 
+    /** @type {Message[]} */
     messages = data || [];
   }
 
   async function kirimPesan() {
     if (!pesan.trim()) return;
-
     if (!selectedUser) return;
 
     sending = true;
+    errorMessage = "";
 
     try {
       const isiPesan = pesan.trim();
@@ -212,22 +272,27 @@
 
       if (error) throw error;
 
+      /** @type {Message} */
+      const message = data;
+
       const sudahAda = messages.some(
-        (item) => item.id === data.id
+        (item) => item.id === message.id
       );
 
       if (!sudahAda) {
-        messages = [...messages, data];
+        messages = [...messages, message];
       }
 
       pesan = "";
 
+      const user = selectedUser;
+
       const sudahAdaChat = chats.some(
-        (chat) => chat.nomor === selectedUser.nomor
+        (chat) => chat.nomor === user.nomor
       );
 
       if (!sudahAdaChat) {
-        chats = [selectedUser, ...chats];
+        chats = [user, ...chats];
       }
     } catch (error) {
       console.error("ERROR KIRIM:", error);
@@ -241,6 +306,9 @@
     }
   }
 
+  /**
+   * @param {string} waktu
+   */
   function formatWaktu(waktu) {
     return new Date(waktu).toLocaleTimeString("id-ID", {
       hour: "2-digit",
@@ -254,9 +322,7 @@
 </svelte:head>
 
 <div class="app">
-
   <aside class="sidebar">
-
     <div class="logo">
       <h1>ChatKita</h1>
     </div>
@@ -287,7 +353,6 @@
     {/if}
 
     <div class="chat-list">
-
       {#if chats.length === 0}
         <p class="empty">
           Cari teman menggunakan nomor ID
@@ -301,20 +366,18 @@
           onclick={() => pilihChat(chat)}
         >
           <div class="avatar">
-            {chat.username.charAt(0).toUpperCase()}
+            {(chat.username || "U").charAt(0).toUpperCase()}
           </div>
 
           <div class="chat-user-info">
-            <b>{chat.username}</b>
+            <b>{chat.display_name || chat.username}</b>
             <span>ID: {chat.nomor}</span>
           </div>
         </button>
       {/each}
-
     </div>
 
     <div class="profile">
-
       <div class="profile-avatar">
         {username
           ? username.charAt(0).toUpperCase()
@@ -325,13 +388,10 @@
         <b>{username || "User"}</b>
         <span>ID: {nomorUser}</span>
       </div>
-
     </div>
-
   </aside>
 
   <main class="chat-area">
-
     {#if loadingUser}
 
       <div class="no-chat">
@@ -341,36 +401,34 @@
     {:else if selectedUser}
 
       <div class="chat-header">
-
         <div class="avatar">
-          {selectedUser.username.charAt(0).toUpperCase()}
+          {(selectedUser.username || "U").charAt(0).toUpperCase()}
         </div>
 
         <div>
-          <b>{selectedUser.username}</b>
+          <b>
+            {selectedUser.display_name || selectedUser.username}
+          </b>
+
           <p>ID: {selectedUser.nomor}</p>
         </div>
-
       </div>
 
       <div class="messages">
-
         {#if messages.length === 0}
           <div class="welcome-message">
             <p>
               Mulai percakapan dengan
-              {selectedUser.username}
+              {selectedUser.display_name || selectedUser.username}
             </p>
           </div>
         {/if}
 
         {#each messages as item}
-
           <div
             class:mine={item.sender_nomor === nomorUser}
             class="message-row"
           >
-
             <div class="message-bubble">
               <p>{item.message}</p>
 
@@ -378,15 +436,11 @@
                 {formatWaktu(item.created_at)}
               </span>
             </div>
-
           </div>
-
         {/each}
-
       </div>
 
       <div class="message-input">
-
         <input
           type="text"
           placeholder="Tulis pesan..."
@@ -405,25 +459,21 @@
         >
           {sending ? "..." : "Kirim"}
         </button>
-
       </div>
 
     {:else}
 
       <div class="no-chat">
-
         <h2>Selamat datang di ChatKita 👋</h2>
 
         <p>
-          Masukkan nomor ID teman di sebelah kiri untuk mulai chat.
+          Masukkan nomor ID teman di sebelah kiri
+          untuk mulai chat.
         </p>
-
       </div>
 
     {/if}
-
   </main>
-
 </div>
 
 <style>
